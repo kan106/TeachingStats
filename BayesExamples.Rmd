@@ -1,0 +1,591 @@
+---
+title: "BayesExamples"
+author: "Kole Norberg"
+date: "4/19/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+First up is to load in the necessary packages. You may need to install them. brms uses stan which can be a pain to load. It might ask you if you want to compile. If I'm having trouble, sometimes I just say no and it works. Also, start with a clean R environment when you install and load up brms or anything else with stan in it. There are some libraries that can get in the way. I don't really know the source of the difficulty. I just know sometimes it installs quickly and easily and sometimes it doesn't. You may need to google around a bit if you're having trouble. 
+```{r libraries}
+#install.packages("brms")
+#install.packages("BayesFactor")
+#install.packages("simstandard")
+#install.packages("tidyverse")
+library(brms)
+library(tidyverse)
+library(simstandard)
+library(BayesFactor)
+```
+##Data simulation
+I've created four data sets. Two have 40 observations and two have 400. Priors will affect the results differently depending on the number of observations. Each set (small and large) also have a case in which the data will come out to be sig (p<.05) and a case where they will not (p>.05). Note that in the sig case, the data is standardized (the intercept will therefore be close to 0). I've posted the histograms so you can see how the distributions look and have computed the correlations between the x (age) and y (vocabulary knowledge) variables to verify that the relationship in the significant set is greater than in the non-sig. set.
+Using the same random see (set.seed()) will usually ensure you get the same results as I do.
+```{r create dataset small}
+set.seed(4321)
+df.ns.small <- tibble::tibble(vk = rnorm(40,200,50), age=rnorm(40,18,4))
+summary(df.ns.small)
+hist(df.ns.small$age)
+hist(df.ns.small$vk)
+cor(df.ns.small$age,df.ns.small$vk) #.02
+
+df.s.small <- simstandard::sim_standardized("age ~~ 0.75 * vk", n = 40)
+summary(df.s.small)
+hist(df.s.small$age)
+hist(df.s.small$vk)
+cor(df.s.small$age,df.s.small$vk) #.64
+```
+
+```{r create dataset large}
+set.seed(4321)
+df.ns.large <- tibble::tibble(vk = rnorm(400,200,50), age=rnorm(400,18,4))
+summary(df.ns.large)
+hist(df.ns.large$age)
+hist(df.ns.large$vk)
+cor(df.ns.large$age,df.ns.large$vk)#.02
+
+df.s.large <- simstandard::sim_standardized("age ~~ 0.75 * vk", n = 400)
+summary(df.s.large)
+hist(df.s.large$age)
+hist(df.s.large$vk)
+cor(df.s.large$age,df.s.large$vk)#.71
+```
+
+##Setting priors
+I'm going to do everything in brms because I think it's the easiest to work with all things considered. stan_lm in the rstanarm library is also good.
+
+I'm setting the priors below to be either diffuse (which here is still somewhat informative), weak, or informative based on a normal distribution. If you're doing logistic regression, you would actually probably want to set the priors on a beta distribution (not the same beta as the beta coefficient) which can be a bit tricky, so I suggest watching a few videos on the beta distribution if you plan to do logistic regression with brms. The cauchy distribution is also commonly used with continuous data. I'm using the normal here because it's more familiar, but you'll want to look up the distribution you use to make sure it reflects your prior beliefs.
+
+For the normal, I set the mean and sd. The mean is always the same in this example; it's the sd that determines how informative the prior is. Class refers to either the variable (b - think beta coefficient), the intercept, sigma (error), or random interecepts and slopes if you're using mixed models. Coef is the name of the variable (case sensitive). The priors I'm setting up here suggest a belief that for every increase in age by one year, vocabulary knowledge increased by 5 but that the mean (intercept) for vocabulary knowledge was 200 in the case of raw data or 0 in the case of standardized data. 
+
+Getting a bayes factor requires setting reasonable priors. The way you set the prior can heavily bias your bayes factor. The best way to handle this is to do a sensitivity analysis to see how your bayes factor reacts to different levels of priors. Here we will also look at how it reacts to priors that suggest there is no relationship (null).
+
+Although we're primarily interested in the beta coefficient on the variable, setting a prior for the intercept can also be useful. Here I'm using the student_t because it's normally used for the intercept in default cases. The first number you get is the df, then the mean, then the sd. Because we're mostly interested in the deviation from the intercept, I think it's ok to go with the default prior from brms and have only set the prior on the intercept once as an example.
+
+
+```{r setup priors at different levels}
+#Priors for an effect, not standardized
+diffuse <- c(set_prior("normal(5,100)", class = "b", coef = "age"),
+             set_prior("student_t(3,200,2.5)", class="Intercept"))
+weak <- set_prior("normal(5,10)", class = "b", coef = "age")
+informative <- set_prior("normal(5,1)", class = "b", coef = "age")
+hyperinformative <- set_prior("normal(5,.1)", class = "b", coef = "age")
+
+#Priors for an effect, standardized. I only need to do thie for the diffuse prior because it has a prior on the intercept which will change when standardized
+diffuse.s <- c(set_prior("normal(5,100)", class = "b", coef = "age"),
+             set_prior("student_t(3,0,2.5)", class="Intercept"))
+
+#Null Priors
+diffuseN <- c(set_prior("normal(0,100)", class = "b", coef = "age"),
+             set_prior("student_t(3,200,2.5)", class="Intercept"))
+diffuse.sN <- c(set_prior("normal(0,100)", class = "b", coef = "age"),
+             set_prior("student_t(3,0,2.5)", class="Intercept"))
+weakN <- set_prior("normal(0,10)", class = "b", coef = "age")
+informativeN <- set_prior("normal(0,1)", class = "b", coef = "age")
+hyperinformativeN <- set_prior("normal(0,.1)", class = "b", coef = "age")
+```
+
+##Running brms
+brms is set up just like the lm with a few other parameters. family=gaussian() says that this is a continuous variable and we are using a normal distribution. If this were logistic, I would use family=bernoulli (not binomial). The math for these distributions is different but for inferential purposes, they produce the same results. Brms prefers bernoulli.
+
+Chains refers to the markov chains. 4 is plenty. Explaining this is beyond the scope of this document. Basically, the model starts in 4 places on the distribution and checks to see if it ends up in the same spot each time. rhat=1 in the summary output if this works. 
+
+iter refers to the number of iterations in each chain. 2000 is usually enough, but if you find that in the summary output, rhat does not = 1, you should increase your iterations as you don't have a good fit. rhat = 1.01 is not good enough; you want 1. 2000 is the default, so I have it set once in ns.s.flat so you can see how to do it, but I don't set it again. 
+
+cores allows you to use your computers processing power to speed up the computations. You can use as many cores as there are chains provided your computer has that many. Each core will run a chain. I have two cores on my computer, so if I set cores to 2, the entire process takes ~half the time. 
+
+sample_prior = TRUE allows us to plot our priors later. It's just telling brms not to trash this data. If you're having trouble understanding your prior, plotting it is the easiest way to get a sense of what is happening. This only works though if you set priors; it doesn't work with brms default priors.
+
+save_all_pars = save_pars(all=TRUE) keeps the appropriate values on hand for calculating the bayes factor.
+
+I'm running six models below. the first is the basic linear model, then a brms model with flat priors. Flat priors are set by brms. They are uninformative and improper (don't sum to 1) priors and consist basically of placing equal probability on all real numbers. brms calls this "flat priors over the reals." We then move on to the diffuse, weakly informative, informative, and hyperinformative models. The next output consists of the prior summaries followed by the results summaries. Results summaries are similar to lm summaries with a few small differences that we'll go over in class. The final bit are the plots of the brms models. Note that the flat model has no prior distribution plotted.
+
+```{r test the effect with small ns data set}
+#Basic linear model
+mod.lm.ns.small <- lm(vk~age,data=df.ns.small)
+#brms with flat priors (brms sets a prior here that is flat but over the reals meaning only covers the real numbers)
+ns.s.flat <- brm(vk~age,data=df.ns.small,family=gaussian(),chains=4,iter=2000,cores=2,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+#brms with minimal priors
+ns.s.diffuse <- brm(vk~age,data=df.ns.small,family=gaussian(),chains=4,cores=2,prior=diffuse,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+#brms with weak priors
+ns.s.weak <- brm(vk~age,data=df.ns.small,family=gaussian(),chains=4,cores=2,prior=weak,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+#brms with informative priors
+ns.s.inf <- brm(vk~age,data=df.ns.small,family=gaussian(),chains=4,cores=2,prior=informative,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+#brms with hyper informative priors
+ns.s.hyper <- brm(vk~age,data=df.ns.small,family=gaussian(),chains=4,cores=2,prior=hyperinformative,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+```
+
+```{r output for brms ns small data}
+prior_summary(ns.s.flat)
+prior_summary(ns.s.diffuse)
+prior_summary(ns.s.weak)
+prior_summary(ns.s.inf)
+prior_summary(ns.s.hyper)
+summary(mod.lm.ns.small)
+summary(ns.s.flat)
+summary(ns.s.diffuse)
+summary(ns.s.weak)
+summary(ns.s.inf)
+summary(ns.s.hyper)
+plot(hypothesis(ns.s.flat, "age = 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Flat Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(ns.s.diffuse, "age = 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Diffuse Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(ns.s.weak, "age = 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Weak Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(ns.s.inf, "age = 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Informative Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(ns.s.hyper, "age = 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Hyper Informative Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+```
+
+The below graphs just put the diffuse, weak, and informative models together into one graph so you can see how the prior distribution affects the posterior. 
+```{r combined graph for small ns data}
+posterior1 <- posterior_samples(ns.s.diffuse, pars = "b_age")[,c(1,2)]
+posterior2 <- posterior_samples(ns.s.weak, pars = "b_age")[,c(1,2)]
+posterior3 <- posterior_samples(ns.s.inf, pars = "b_age")[,c(1,2)]
+
+posterior1.2.3 <- bind_rows("prior 1" = pivot_longer(posterior1,c(prior_b_age,b_age)), 
+                            "prior 2" = pivot_longer(posterior2,c(prior_b_age,b_age)), 
+                            "prior 3" = pivot_longer(posterior3,c(prior_b_age,b_age)), 
+                            .id = "id")
+modelLME <- lm(vk ~ 1 + age, data = df.ns.small)
+
+ggplot(data    = posterior1.2.3, 
+       mapping = aes(x        = value,
+                     fill     =  id, 
+                     colour   = name,
+                     linetype = name, 
+                     alpha    = name
+                   )) +
+  geom_density(size = 1.2)+
+  geom_vline(xintercept = summary(modelLME)$coefficients["age", "Estimate"],  #add the frequentist solution too
+             size = .8, linetype = 2, col = "black")+ 
+  scale_x_continuous(limits = c(-20, 20))+
+  coord_cartesian(ylim = c(0, .5))+
+  scale_fill_manual(name   = "Densities", 
+                    values = c("Yellow","darkred","blue" ), 
+                    labels = c("diffuse ~ N(5,100) prior",
+                               "weak ~ N(5,10) prior",
+                               "informative ~ N(5, 1) prior") )+
+  scale_colour_manual(name   = 'Posterior/Prior', 
+                      values = c("black","red"), 
+                      labels = c("posterior", "prior"))+
+  scale_linetype_manual(name   ='Posterior/Prior', 
+                        values = c("solid","dotted"), 
+                        labels = c("posterior", "prior"))+
+  scale_alpha_discrete(name   = 'Posterior/Prior', 
+                       range  = c(.7,.3), 
+                       labels = c("posterior", "prior"))+
+  annotate(geom    = "text", 
+           x = 0.45, y = -.13,
+           label  = "LME estimate:  0.804", 
+           col    = "black", 
+           family = theme_get()$text[["family"]], 
+           size   = theme_get()$text[["size"]]/3.5, 
+           fontface="italic")+
+  labs(title    = expression("Influence of Priors on Posterior"),
+       subtitle = "3 different densities of priors and posteriors and the LME estimate")+
+  theme_bw()
+```
+
+We will do all of the above again, except this time for the data set we know is significant. I'm now using include = FALSE in the header in order to suppress the long progress output within the markdown file.
+```{r test the effect with small sig data set, include=FALSE}
+mod.lm.s.small <- lm(vk~age,data=df.s.small)
+s.s.flat <- brm(vk~age,data=df.s.small,family=gaussian(),chains=4,cores=2,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+s.s.diffuse <- brm(vk~age,data=df.s.small,family=gaussian(),chains=4,cores=2,prior=diffuse.s,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+s.s.weak <- brm(vk~age,data=df.s.small,family=gaussian(),chains=4,cores=2,prior=weak,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+s.s.inf <- brm(vk~age,data=df.s.small,family=gaussian(),chains=4,cores=2,prior=informative,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+s.s.hyper<- brm(vk~age,data=df.s.small,family=gaussian(),chains=4,cores=2,prior=hyperinformative,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+```
+
+```{r output for sig small data}
+summary(mod.lm.s.small)
+summary(s.s.flat)
+summary(s.s.diffuse)
+summary(s.s.weak)
+summary(s.s.inf)
+summary(s.s.hyper)
+plot(hypothesis(s.s.flat, "age > 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Flat Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(s.s.diffuse, "age > 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Diffuse Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(s.s.weak, "age > 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Weak Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(s.s.inf, "age > 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Informative Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(s.s.hyper, "age > 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Hyper Informative Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+```
+
+```{r combined graph for small sig data}
+posterior1 <- posterior_samples(s.s.diffuse, pars = "b_age")[,c(1,2)]
+posterior2 <- posterior_samples(s.s.weak, pars = "b_age")[,c(1,2)]
+posterior3 <- posterior_samples(s.s.inf, pars = "b_age")[,c(1,2)]
+
+posterior1.2.3 <- bind_rows("prior 1" = pivot_longer(posterior1,c(prior_b_age,b_age)), 
+                            "prior 2" = pivot_longer(posterior2,c(prior_b_age,b_age)), 
+                            "prior 3" = pivot_longer(posterior3,c(prior_b_age,b_age)), 
+                            .id = "id")
+modelLME <- lm(vk ~ 1 + age, data = df.s.small)
+
+ggplot(data    = posterior1.2.3, 
+       mapping = aes(x        = value,
+                     fill     =  id, 
+                     colour   = name,
+                     linetype = name, 
+                     alpha    = name
+                   )) +
+  geom_density(size = 1.2)+
+  geom_vline(xintercept = summary(modelLME)$coefficients["age", "Estimate"],  #add the frequentist solution too
+             size = .8, linetype = 2, col = "black")+ 
+  scale_x_continuous(limits = c(-20, 20))+
+  coord_cartesian(ylim = c(0, .5))+
+  scale_fill_manual(name   = "Densities", 
+                    values = c("Yellow","darkred","blue" ), 
+                    labels = c("diffuse ~ N(5,100) prior",
+                               "weak ~ N(5,10) prior",
+                               "informative ~ N(5, 1) prior") )+
+  scale_colour_manual(name   = 'Posterior/Prior', 
+                      values = c("black","red"), 
+                      labels = c("posterior", "prior"))+
+  scale_linetype_manual(name   ='Posterior/Prior', 
+                        values = c("solid","dotted"), 
+                        labels = c("posterior", "prior"))+
+  scale_alpha_discrete(name   = 'Posterior/Prior', 
+                       range  = c(.7,.3), 
+                       labels = c("posterior", "prior"))+
+  annotate(geom    = "text", 
+           x = 0.45, y = -.13,
+           label  = "LME estimate:  0.804", 
+           col    = "black", 
+           family = theme_get()$text[["family"]], 
+           size   = theme_get()$text[["size"]]/3.5, 
+           fontface="italic")+
+  labs(title    = expression("Influence of Priors on Posterior"),
+       subtitle = "3 different densities of priors and posteriors and the LME estimate")+
+  theme_bw()
+```
+We're repeating the above again for large not significant data set
+```{r test the effect with large ns data set,include=FALSE}
+mod.lm.ns.large <- lm(vk~age,data=df.ns.large)
+l.ns.flat <- brm(vk~age,data=df.ns.large,family=gaussian(),chains=4,cores=2,sample_prior = TRUE,save_pars=save_pars(all=TRUE),silent=2)
+l.ns.diffuse <- brm(vk~age,data=df.ns.large,family=gaussian(),chains=4,cores=2,prior=diffuse,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+l.ns.weak <- brm(vk~age,data=df.ns.large,family=gaussian(),chains=4,cores=2,prior=weak,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+l.ns.inf <- brm(vk~age,data=df.ns.large,family=gaussian(),chains=4,cores=2,prior=informative,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+l.ns.hyper <- brm(vk~age,data=df.ns.large,family=gaussian(),chains=4,cores=2,prior=hyperinformative,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+```
+
+```{r output for large ns data}
+summary(mod.lm.ns.large)
+summary(l.ns.flat)
+summary(l.ns.diffuse)
+summary(l.ns.weak)
+summary(l.ns.inf)
+summary(l.ns.hyper)
+plot(hypothesis(l.ns.flat, "age > 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Flat Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(l.ns.diffuse, "age > 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Diffuse Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(l.ns.weak, "age > 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Weak Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(l.ns.inf, "age > 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Informative Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(l.ns.hyper, "age > 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Hyper Informative Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+```
+
+```{r combined graph for large ns data}
+posterior1 <- posterior_samples(l.ns.diffuse, pars = "b_age")[,c(1,2)]
+posterior2 <- posterior_samples(l.ns.weak, pars = "b_age")[,c(1,2)]
+posterior3 <- posterior_samples(l.ns.inf, pars = "b_age")[,c(1,2)]
+
+posterior1.2.3 <- bind_rows("prior 1" = pivot_longer(posterior1,c(prior_b_age,b_age)), 
+                            "prior 2" = pivot_longer(posterior2,c(prior_b_age,b_age)), 
+                            "prior 3" = pivot_longer(posterior3,c(prior_b_age,b_age)), 
+                            .id = "id")
+modelLME <- lm(vk ~ 1 + age, data = df.ns.large)
+
+ggplot(data    = posterior1.2.3, 
+       mapping = aes(x        = value,
+                     fill     =  id, 
+                     colour   = name,
+                     linetype = name, 
+                     alpha    = name
+                   )) +
+  geom_density(size = 1.2)+
+  geom_vline(xintercept = summary(modelLME)$coefficients["age", "Estimate"],  #add the frequentist solution too
+             size = .8, linetype = 2, col = "black")+ 
+  scale_x_continuous(limits = c(-20, 20))+
+  coord_cartesian(ylim = c(0, 1))+
+  scale_fill_manual(name   = "Densities", 
+                    values = c("Yellow","darkred","blue" ), 
+                    labels = c("diffuse ~ N(5,100) prior",
+                               "weak ~ N(5,10) prior",
+                               "informative ~ N(5, 1) prior") )+
+  scale_colour_manual(name   = 'Posterior/Prior', 
+                      values = c("black","red"), 
+                      labels = c("posterior", "prior"))+
+  scale_linetype_manual(name   ='Posterior/Prior', 
+                        values = c("solid","dotted"), 
+                        labels = c("posterior", "prior"))+
+  scale_alpha_discrete(name   = 'Posterior/Prior', 
+                       range  = c(.7,.3), 
+                       labels = c("posterior", "prior"))+
+  annotate(geom    = "text", 
+           x = 0.45, y = -.13,
+           label  = "LME estimate:  0.804", 
+           col    = "black", 
+           family = theme_get()$text[["family"]], 
+           size   = theme_get()$text[["size"]]/3.5, 
+           fontface="italic")+
+  labs(title    = expression("Influence of Priors on Posterior"),
+       subtitle = "3 different densities of priors and posteriors and the LME estimate")+
+  theme_bw()
+```
+and finally again with the large sig data set
+```{r test the effect with large sig data set, include=FALSE}
+mod.lm.s.large <- lm(vk~age,data=df.s.large)
+l.s.flat <- brm(vk~age,data=df.s.large,family=gaussian(),chains=4,cores=2,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+l.s.diffuse <- brm(vk~age,data=df.s.large,family=gaussian(),chains=4,cores=2,prior=diffuse.s,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+l.s.weak <- brm(vk~age,data=df.s.large,family=gaussian(),chains=4,cores=2,prior=weak,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+l.s.inf <- brm(vk~age,data=df.s.large,family=gaussian(),chains=4,cores=2,prior=informative,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+l.s.hyper <- brm(vk~age,data=df.s.large,family=gaussian(),chains=4,cores=2,prior=hyperinformative,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+```
+
+```{r output for large sig data}
+summary(mod.lm.s.large)
+summary(l.s.flat)
+summary(l.s.diffuse)
+summary(l.s.weak)
+summary(l.s.inf)
+summary(l.s.hyper)
+plot(hypothesis(l.s.flat, "age > 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Flat Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(l.s.diffuse, "age > 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Diffuse Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(l.s.weak, "age > 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Weak Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(l.ns.inf, "age > 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Informative Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+plot(hypothesis(l.s.hyper, "age > 0"),plot=FALSE)[[1]] + theme_bw() + labs(title="Hyper Informative Priors",y="Density",x="Beta Distribution") + theme(plot.title=element_text(size=18),axis.title=element_text(size=14),axis.text=element_text(size=12), legend.text=element_text(size=14),legend.title=element_text(size=14))+xlim(-10,10)
+
+```
+
+```{r combined graph for large sig data}
+posterior1 <- posterior_samples(l.s.diffuse, pars = "b_age")[,c(1,2)]
+posterior2 <- posterior_samples(l.s.weak, pars = "b_age")[,c(1,2)]
+posterior3 <- posterior_samples(l.s.inf, pars = "b_age")[,c(1,2)]
+
+posterior1.2.3 <- bind_rows("prior 1" = pivot_longer(posterior1,c(prior_b_age,b_age)), 
+                            "prior 2" = pivot_longer(posterior2,c(prior_b_age,b_age)), 
+                            "prior 3" = pivot_longer(posterior3,c(prior_b_age,b_age)), 
+                            .id = "id")
+modelLME <- lm(vk ~ 1 + age, data = df.s.large)
+
+ggplot(data    = posterior1.2.3, 
+       mapping = aes(x        = value,
+                     fill     =  id, 
+                     colour   = name,
+                     linetype = name, 
+                     alpha    = name
+                   )) +
+  geom_density(size = 1.2)+
+  geom_vline(xintercept = summary(modelLME)$coefficients["age", "Estimate"],  #add the frequentist solution too
+             size = .8, linetype = 2, col = "black")+ 
+  scale_x_continuous(limits = c(-20, 20))+
+  coord_cartesian(ylim = c(0, 1))+
+  scale_fill_manual(name   = "Densities", 
+                    values = c("Yellow","darkred","blue" ), 
+                    labels = c("diffuse ~ N(5,100) prior",
+                               "weak ~ N(5,10) prior",
+                               "informative ~ N(5, 1) prior") )+
+  scale_colour_manual(name   = 'Posterior/Prior', 
+                      values = c("black","red"), 
+                      labels = c("posterior", "prior"))+
+  scale_linetype_manual(name   ='Posterior/Prior', 
+                        values = c("solid","dotted"), 
+                        labels = c("posterior", "prior"))+
+  scale_alpha_discrete(name   = 'Posterior/Prior', 
+                       range  = c(.7,.3), 
+                       labels = c("posterior", "prior"))+
+  annotate(geom    = "text", 
+           x = 0.45, y = -.13,
+           label  = "LME estimate:  0.804", 
+           col    = "black", 
+           family = theme_get()$text[["family"]], 
+           size   = theme_get()$text[["size"]]/3.5, 
+           fontface="italic")+
+  labs(title    = expression("Influence of Priors on Posterior"),
+       subtitle = "3 different densities of priors and posteriors and the LME estimate")+
+  theme_bw()
+```
+
+```{r combined graph for small large ns data}
+posterior1 <- posterior_samples(ns.s.weak, pars = "b_age")[,c(1,2)]
+posterior2 <- posterior_samples(l.ns.weak, pars = "b_age")[,c(1,2)]
+posterior3 <- posterior_samples(ns.s.inf, pars = "b_age")[,c(1,2)]
+posterior4 <- posterior_samples(l.ns.inf, pars = "b_age")[,c(1,2)]
+
+posterior1.2.3.4 <- bind_rows("prior 1" = pivot_longer(posterior1,c(prior_b_age,b_age)), 
+                            "prior 2" = pivot_longer(posterior2,c(prior_b_age,b_age)), 
+                            "prior 3" = pivot_longer(posterior3,c(prior_b_age,b_age)),
+                            "prior 4" =pivot_longer(posterior4,c(prior_b_age,b_age)),
+                            .id = "id")
+modelLME.l <- lm(vk ~ 1 + age, data = df.ns.large)
+modelLME.s <- lm(vk ~ 1 + age, data = df.ns.small)
+
+ggplot(data    = posterior1.2.3.4, 
+       mapping = aes(x        = value,
+                     fill     =  id, 
+                     colour   = name,
+                     linetype = name, 
+                     alpha    = name
+                   )) +
+  geom_density(size = 1.2)+
+  geom_vline(xintercept = summary(modelLME.s)$coefficients["age", "Estimate"],  #add the frequentist solution too
+             size = .8, linetype = 2, col = "grey")+ 
+   geom_vline(xintercept = summary(modelLME.l)$coefficients["age", "Estimate"],  #add the frequentist solution too
+             
+             size = .8, linetype = 2, col = "black")+ 
+  scale_x_continuous(limits = c(-10, 10))+
+  coord_cartesian(ylim = c(0, .75))+
+  scale_fill_manual(name   = "Densities", 
+                    values = c("blue","red","green","orange" ), 
+                    labels = c("small.ns.weak ~ N(5,10) prior",
+                               "large.ns.weak ~ N(5,10) prior",
+                               "small.ns.inf ~ N(5, 1) prior",
+                    "large.ns.inf ~ N(5, 1) prior"))+
+  scale_colour_manual(name   = 'Posterior/Prior', 
+                      values = c("black","purple"), 
+                      labels = c("posterior", "prior"))+
+  scale_linetype_manual(name   ='Posterior/Prior', 
+                        values = c("solid","dotted"), 
+                        labels = c("posterior", "prior"))+
+  scale_alpha_discrete(name   = 'Posterior/Prior', 
+                       range  = c(.7,.3), 
+                       labels = c("posterior", "prior"))+
+  labs(title    = "Influence of Weak and Informative Priors",
+       subtitle = "using a small and large data set")+
+  theme_bw()
+```
+Below are just null models for each data set. These can be used to get the Bayes factors
+```{r null models for comparison, include=FALSE}
+null.small.ns <- brm(vk~1,data=df.ns.small,chains=4,family=gaussian(),cores=2,save_pars=save_pars(all=TRUE)) 
+#Our diffuse model has priors set on the intercept. We need to carry these priors forward to the model. They don't affect the bayes factors except that we don't want to compare models with different priors on the alternate variables. So here we use the brms update function to update the formula to include all variables (.) except age (-age).
+null.small.ns.diffuse <- update(ns.s.diffuse, formula = ~ .-age)
+null.large.ns <- brm(vk~1,data=df.ns.large,chains=4,family=gaussian(),cores=2,save_pars=save_pars(all=TRUE)) 
+null.large.ns.diffuse <- update(l.ns.diffuse, formula = ~ .-age)
+null.small.s <- brm(vk~1,data=df.s.small,chains=4,family=gaussian(),cores=2,save_pars=save_pars(all=TRUE)) 
+null.small.s.diffuse <- update(s.s.diffuse, formula = ~ .-age)
+null.large.s <- brm(vk~1,data=df.s.large,chains=4,family=gaussian(),cores=2,save_pars=save_pars(all=TRUE)) 
+null.large.s.diffuse <- update(l.s.diffuse, formula = ~ .-age)
+```
+
+Now we'll compute the actual bayes factors. I'll walk through two ways to do this but there are others.
+
+The first way involves the library BayesFactor. For this data, we'll use the function lmBF but you'll want to explore to see if that is appropriate for your data. lmBF gives us the evidence for the alternative versus a null model. There are other comparisons that can be set up. You'll need to look into the documentation for your specific needs. A nice feature of lmBF is that it provides an error interval on the BF so you don't need to run it multiple times to see how reliable it is.
+
+Another way to get a BF is through brms native function bayes_factor. For this, you need to run your null model and then you compare the two. Whichever one goes into the parentheses first is the numerator and the BF you return will be the support for that model. Because the bayes_factor function does not give an error interval, I usually run a few times (here just twice) to ensure the results are equivalent across runs. If they're not, I increase the iterations in the original model. I then report the average as the BF and the extent of variation as a range or percentage.
+
+lmBF gives the evidence for the alternative. I set bayes_factor to give the evidence for the null. To get values the other way around, just take 1/BF. 
+```{r compute bayes factors}
+#Small n.s. data
+bf.s.ns.flat <- lmBF(vk~age,df.ns.small) #.31 (evidence for H1)
+bf.s.ns.diffuse <- bayes_factor(null.small.ns.diffuse,ns.s.diffuse) #45.32, 45.93 (evidence for H0)
+bf.s.ns.weak <- bayes_factor(null.small.ns,ns.s.weak) #5.18, 5.15 (evidence for H0)
+bf.s.ns.inf <- bayes_factor(null.small.ns,ns.s.inf) #7.23, 7.26 (evidence for H0)
+bf.s.ns.hyper <- bayes_factor(null.small.ns,ns.s.hyper) #9.56, 9.52 (evidence for H0)
+
+#small sig data
+bf.s.s.flat <- lmBF(vk~age,df.s.small) #1719.149 (evidence for H1)
+bf.s.s.diffuse <- bayes_factor(null.small.s.diffuse,s.s.diffuse) #.04364, .044 (evidence for H0)
+bf.s.s.weak <- bayes_factor(null.small.s,s.s.weak) #.0048, .00484 (evidence for H0)
+bf.s.s.inf <- bayes_factor(null.small.s,s.s.inf) #8.67, 8.65 (evidence for H0)
+bf.s.s.hyper <- bayes_factor(null.small.s,s.s.hyper) #>10000,>10000 (evidence for H0)
+
+#large ns data 
+bf.l.ns.flat <- lmBF(vk~age,df.ns.large) #.12 (evidence for H1)
+bf.l.ns.diffuse <- bayes_factor(null.large.ns.diffuse,l.ns.diffuse) #150.58, 150.17 (evidence for H0)
+bf.l.ns.weak <- bayes_factor(null.large.ns,l.ns.weak) #16.74, 16.72 (evidence for H0)
+bf.l.ns.inf <- bayes_factor(null.large.ns,l.ns.inf) #6392.59, 6360.84 (evidence for H0)
+bf.l.ns.hyper <- bayes_factor(null.large.ns,l.ns.hyper) #>10,000, >10,000 (evidence for H0)
+
+#Large s data
+bf.l.s.flat <- lmBF(vk~age,df.s.large) #5.85 +- .01% (evidence for H1)
+bf.l.s.diffuse <- bayes_factor(null.large.s.diffuse,l.s.diffuse) #<.0001,<.0001 (evidence for H0)
+bf.l.s.weak <- bayes_factor(null.large.s,l.s.weak) #<.0001,<.0001 (evidence for H0)
+bf.l.s.inf <- bayes_factor(null.large.s,l.s.inf) #<.0001,<.0001 (evidence for H0)
+bf.l.s.hyper <- bayes_factor(null.large.s,l.s.hyper) #>10000,>10000 (evidence for H0)
+
+```
+
+Now that we've looked at the bayes factors for these models if our priors suggest an effect, let's look at them if our priors suggest there's not an effect. We're doing this because the BFs were pretty wonky in some spots above because I set a prior that was ridiculous. When set one that is more reasonable, our results are less wonky. I'll run all the brms in one block here.
+
+```{r run the brms with priors on 0, include=FALSE}
+#Small NS
+ns.s.diffuseN <- brm(vk~age,data=df.ns.small,family=gaussian(),chains=4,cores=2,prior=diffuseN,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+
+ns.s.weakN <- brm(vk~age,data=df.ns.small,family=gaussian(),chains=4,cores=2,prior=weak,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+
+ns.s.infN <- brm(vk~age,data=df.ns.small,family=gaussian(),chains=4,cores=2,prior=informativeN,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+
+ns.s.hyperN <- brm(vk~age,data=df.ns.small,family=gaussian(),chains=4,cores=2,prior=hyperinformativeN,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+
+#Small Sig
+s.s.diffuseN <- brm(vk~age,data=df.s.small,family=gaussian(),chains=4,cores=2,prior=diffuse.sN,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+
+s.s.weakN <- brm(vk~age,data=df.s.small,family=gaussian(),chains=4,cores=2,prior=weakN,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+
+s.s.infN <- brm(vk~age,data=df.s.small,family=gaussian(),chains=4,cores=2,prior=informativeN,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+
+s.s.hyperN <- brm(vk~age,data=df.s.small,family=gaussian(),chains=4,cores=2,prior=hyperinformativeN,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+
+#Large NS
+l.ns.diffuseN <- brm(vk~age,data=df.ns.large,family=gaussian(),chains=4,cores=2,prior=diffuseN,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+
+l.ns.weakN <- brm(vk~age,data=df.ns.large,family=gaussian(),chains=4,cores=2,prior=weakN,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+
+l.ns.infN <- brm(vk~age,data=df.ns.large,family=gaussian(),chains=4,cores=2,prior=informativeN,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+
+l.ns.hyperN <- brm(vk~age,data=df.ns.large,family=gaussian(),chains=4,cores=2,prior=hyperinformativeN,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+#Large Sig
+l.s.diffuseN <- brm(vk~age,data=df.s.large,family=gaussian(),chains=4,cores=2,prior=diffuse.sN,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+
+l.s.weakN <- brm(vk~age,data=df.s.large,family=gaussian(),chains=4,cores=2,prior=weakN,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+
+l.s.infN <- brm(vk~age,data=df.s.large,family=gaussian(),chains=4,cores=2,prior=informativeN,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+
+l.s.hyperN <- brm(vk~age,data=df.s.large,family=gaussian(),chains=4,cores=2,prior=hyperinformativeN,sample_prior = TRUE,save_pars=save_pars(all=TRUE))
+```
+
+```{r output for null priors}
+plot(hypothesis(ns.s.diffuseN,"age=0"),plot=FALSE)[[1]]+labs(title="Small, NS, Diffuse Prior")+xlim(-1.5,1.5)
+plot(hypothesis(ns.s.weakN,"age=0"),plot=FALSE)[[1]]+labs(title="Small, NS, Weak Prior")+xlim(-1.5,1.5)
+plot(hypothesis(ns.s.infN,"age=0"),plot=FALSE)[[1]]+labs(title="Small, NS, Inf Prior")+xlim(-1.5,1.5)
+plot(hypothesis(ns.s.hyperN,"age=0"),plot=FALSE)[[1]]+labs(title="Small, NS, Hyper Prior")+xlim(-1.5,1.5)
+plot(hypothesis(s.s.diffuseN,"age=0"),plot=FALSE)[[1]]+labs(title="Small, Sig, Diffuse Prior")+xlim(-1.5,1.5)
+plot(hypothesis(s.s.weakN,"age=0"),plot=FALSE)[[1]]+labs(title="Small, Sig, Weak Prior")+xlim(-1.5,1.5)
+plot(hypothesis(s.s.infN,"age=0"),plot=FALSE)[[1]]+labs(title="Small, Sig, Inf Prior")+xlim(-1.5,1.5)
+plot(hypothesis(s.s.hyperN,"age=0"),plot=FALSE)[[1]]+labs(title="Small, Sig, Hyper Prior")+xlim(-1.5,1.5)
+plot(hypothesis(l.ns.diffuseN,"age=0"),plot=FALSE)[[1]]+labs(title="Large, NS, Diffuse Prior")+xlim(-1.5,1.5)
+plot(hypothesis(l.ns.weakN,"age=0"),plot=FALSE)[[1]]+labs(title="Large, NS, Weak Prior")+xlim(-1.5,1.5)
+plot(hypothesis(l.ns.infN,"age=0"),plot=FALSE)[[1]]+labs(title="Large, NS, Inf Prior")+xlim(-1.5,1.5)
+plot(hypothesis(l.ns.hyperN,"age=0"),plot=FALSE)[[1]]+labs(title="Large, NS, Hyper Prior")+xlim(-1.5,1.5)
+plot(hypothesis(l.s.diffuseN,"age=0"),plot=FALSE)[[1]]+labs(title="Large, Sig, Diffuse Prior")+xlim(-1.5,1.5)
+plot(hypothesis(l.s.weakN,"age=0"),plot=FALSE)[[1]]+labs(title="Large, Sig, Weak Prior")+xlim(-1.5,1.5)
+plot(hypothesis(l.s.infN,"age=0"),plot=FALSE)[[1]]+labs(title="Large, Sig, Inf Prior")+xlim(-1.5,1.5)
+plot(hypothesis(l.s.hyperN,"age=0"),plot=FALSE)[[1]]+labs(title="Large, Sig, Hyper Prior")+xlim(-1.5,1.5)
+```
+And finally, compute those BF. the BF on the flat prior won't change, so I skipped that step.
+```{r compute bayes factors with priors suggesting the null}
+#Small n.s. data
+bf.s.ns.diffuseN <- bayes_factor(null.small.ns.diffuse,ns.s.diffuseN) #45.46, 45.60
+bf.s.ns.weakN <- bayes_factor(null.small.ns,ns.s.weakN) #5.16, 5.12
+bf.s.ns.infN <- bayes_factor(null.small.ns,ns.s.infN) #1.09, 1.1 
+bf.s.ns.hyperN <- bayes_factor(null.small.ns,ns.s.hyperN) #1,1.001
+
+#small sig data
+bf.s.s.diffuseN <- bayes_factor(null.small.s.diffuse,s.s.diffuseN) #.04, .044
+bf.s.s.weakN <- bayes_factor(null.small.s,s.s.weakN) #.0048, .0044
+bf.s.s.infN <- bayes_factor(null.small.s,s.s.infN) #.0005, .0005
+bf.s.s.hyperN <- bayes_factor(null.small.s,s.s.hyperN) #.00009, .03
+
+#large ns data 
+bf.l.ns.diffuseN <- bayes_factor(null.large.ns.diffuse,l.ns.diffuseN) #150.48, 150.38
+bf.l.ns.weakN <- bayes_factor(null.large.ns,l.ns.weakN) #14.98, 15.07
+bf.l.ns.infN <- bayes_factor(null.large.ns,l.ns.infN) #1.75, 1.79
+bf.l.ns.hyperN <- bayes_factor(null.large.ns,l.ns.hyperN) #1.01, 1.01
+
+#Large s data
+bf.l.s.diffuseN <- bayes_factor(null.large.s.diffuse,l.s.diffuseN) #<.0001,<.0001
+bf.l.s.weakN <- bayes_factor(null.large.s,l.s.weakN) #<.0001,<.0001
+bf.l.s.infN <- bayes_factor(null.large.s,l.s.infN) #<.0001,<.0001
+bf.l.s.hyperN <- bayes_factor(null.large.s,l.s.hyperN) #<.0001,<.0001
+
+```
+

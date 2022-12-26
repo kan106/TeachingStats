@@ -1,0 +1,380 @@
+---
+title: "ANOVA R Overview"
+author: "Kole Norberg"
+date: "1/10/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# R ANOVA Overview
+
+## Using R Markdown
+
+I use R markdown rather than a standard R script because it keeps my code more organized. 
+
+Why use Markdown?
+
+* You can keep track of your own data chunks more easily.
+* When you knit (see the option beneath the tabs of open documents), you'll get a prettier version of your results that's more consumable for others.
+
+For your knitted document you can: 
+
+* create lists (put a list title, a break and then single asterisk for each bullet point)
+* create headers with one, two, or three hash tags representing header size. Note: put a space after the hashtags before starting the word.
+* *italicize* or **bold** text by surrounding in in *one* or **two** asterisks
+* create [links](https://rmarkdown.rstudio.com/articles_intro.html) by using brackets around the word to be linked followed immediately (no spaces) by the url: \[word to be linked](www.link.com) but without the slash at the start if you're reading this in the markdown code.
+
+When you first open an Rmarkdown file (File -> New File -> RMarkdown) you'll get a bunch of sample code. Delete all of it except the setup line below. This is your set up for the whole markdown and creates broad rules for knitting. The syntax is {r chunk_name, rules} Here, **include** is set to **TRUE** so that this block will show up in the markdown. *Traditionally,* it's set to **FALSE.** Within the code block, knitr::opts_chunk$set() provides the rules for the entire document. **echo** is set to **TRUE** here meaning that *code* will be printed in the knitted document. I could also set a value for **eval** which would control whether or not to display *results* in the knitted document.
+
+Two important notes on this:
+
+* I most commonly set **message = FALSE** which turns off warnings and other types of informational messages, but I only do this for knitting as warnings can be important to interpreting your code. 
+* You can set these features for the whole document or for individuals blocks of code. To set them for individual blocks, include them inside the bracket for the box. 
+
+Lastly, the first chunk of code here does not need to be run by you. It will be run during knitting.
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**To start a new block, hit command + alt + i**
+
+
+## Loading Libraries
+
+You've already done quite a bit of this so I will only make a few notes here:
+
+1. I always put my libraries at the top and always load tidyverse.
+2. You can see if you already have a package with find.package() I might run this line on its own before running the whole chunk. You can do that by putting your cursor on the line and hitting control + enter.
+3. I set **message=FALSE** because I'm familiar with these packages and their warnings, and I don't want to see this code when I knit it.
+4. To run this block alone, I can hit the green arrow at the top right of the block (the one furthest right and pointing to the right). To run all of the blocks above this one, I can hit the gray arrow pointing down with a green line under it (one to the left). I can run an individual line by putting my cursor on the line and hitting control + enter. The code will show beneath the block and typically also in the console. Click the bar at the bottom of the screen if you can't see your console.
+5. If there is an error in your code, the full block will not run. Uncomment find.package("fake") and run the block to see what this looks like. Knitting will also fail if errors are found.
+6. I can close the block using the arrow on the left most side of the block. This condenses my script and hides the output if there is any.
+
+```{r load libraries, message=FALSE}
+find.package("tidyverse")
+#find.package("fake")
+# If there is no tidyverse package, install and load tidyverse. The tidyverse is a collection of packages that are designed according to a common set of "tidy" principles.
+#install.packages("tidyverse")
+#detach(package:tidyverse)
+#update.packages(c("tidyverse"))
+library(tidyverse) # loads tidyverse, making the functions available for our use. allows us to use pipes
+#install.packages("plotrix")
+library(plotrix) #easily calculate std.error
+#
+library(stringi)
+```
+
+## Reading in the data
+
+I saw you already had a lesson on this, but I have a few tips I didn't see in those lessons.
+
+1. In the upper right hand corner, you can use the project dropdown to create a project with a set working directory. I'm not going to walk through this, but just know it's there. Then, every time you open project, RStudio will open with the appropriate directory. It can also open saved objects from the last iteration of the environment.
+2. ~ is useful for skipping User/username/ etc and just jumping to the Home directory.
+3. I've loaded files multiple ways below just to show the options.
+4. When you write a file, you're going to get an extra, annoying column called X unless you add row.names=FALSE. I've provided an example below. 
+5. **stringsAsFactors** might also be new to you. This is important for ANOVA because a lot of our variables will be categorical and if R reads it as a string you'll get errors on some functions, like during contrast coding. It's annoying to set everything individually to a factor, so unless I have columns I want to leave as strings, I will convert all strings to factors upfront.
+6. Finally, you can get rid of anything by using rm() and you can put as many data frames or objects as you like in there.
+
+```{r read in data}
+getwd()
+setwd("~/Dropbox/backup/grad school/Teaching/Spring 2022/Anova/")
+path <- "~/Dropbox/backup/grad school/Teaching/Spring 2022/Anova/"
+demographics <- read.csv(str_c(path, "smoke-demographics.csv"))
+demographics <- read.csv("~/Dropbox/backup/grad school/Teaching/Spring 2022/Anova/smoke-demographics.csv", stringsAsFactors = TRUE)
+data <- read.csv("smoke-data.csv", stringsAsFactors = TRUE)
+glimpse(demographics)
+#Later, you might want to write a file. write.csv can do this, but if you don't specify row.names = FALSE then the next time you load the file, you'll get an extra column (x)
+write.csv(demographics,"smoke-demographics2.csv")
+demographics2 <- read.csv("smoke-demographics2.csv")
+#Here we can see that we have an extra column called X. That was the row names in the R data frame
+glimpse(demographics2) 
+#row.names = FALSE ensures that when you reload the file, it won't have that X column.
+write.csv(demographics,"smoke-demographics2.csv",row.names = FALSE)
+demographics2 <- read.csv("smoke-demographics2.csv", stringsAsFactors = TRUE)
+glimpse(demographics2) 
+rm(demographics2)
+```
+
+## Merging and Cleaning the data
+
+I saw a section on this in last semester labs, so I'll only add some notes as pertain to dealing with errors.
+
+1. You'll be best served if you make sure the column names for your dataframes are similar enough to work with. I always run colnames() before merging/joining.
+2. full_join will add NAs if an entry doesn't exist in one dataframe.
+3. inner join will remove any entry that isn't in both dataframes.
+4. You can also set NA to 0 with **df[is.na(df)] <- 0**. This only sets columns that are read as numeric to 0 if NA though. It throws a warning for factors and leaves them as NA
+5. Or you can filter them out by adding **across(everything(), ~ !is.na(.x))** to the filter command.
+6. I add dplyr:: to the beginning of all select commands because some other libraries also use select and if those are loaded, you'll get an error unless you specify the library. If you get errors in code you believe should work, try adding package:: to the function call. 
+```{r merge and clean data}
+
+colnames(demographics)
+colnames(data)
+#We can set any value that doesn't exist in one df to NA
+full_df <- full_join(data,demographics)
+summary(full_df)
+#Or we can remove rows that are not complete
+part_df <- inner_join(data,demographics)
+summary(part_df)
+#
+#what if we wanted to make those NAs 0 instead of remove them?
+full_df2 <- full_df #This just creates a copy of the data frame to play with.
+full_df2[is.na(full_df2)] <- 0 #it won't set gender to 0 because it's a factor
+summary(full_df2)
+# Filter is also great for removing those pesky NA values
+full_df2 <- full_df %>% filter(across(everything(), ~ !is.na(.x))) #
+summary(full_df2)
+# Select is similar to filter, but it works on columns rather than rows.
+# Simply write the names of the variables you would like to keep or a minus sign before any you want to exclude
+full_df2 <- full_df %>% dplyr::select(subject, contains("session"), -contains("2")) 
+summary(full_df2)
+#Can also be used to reorder your columns
+full_df2 <- full_df %>% dplyr::select(starts_with("impulse"), everything())
+summary(full_df2)
+#removing dfs we no longer need.
+rm(full_df,full_df2,data,demographics)
+#
+```
+
+## Mutating and more cleaning data
+
+```{r mutate data}
+
+head(part_df)
+part_df <- part_df %>% mutate( 
+       smoke_dummy = ifelse(smoker == "TRUE", 1, 0), #Turn categorical variables into numeric (binary in this case)
+       random = runif(n = 7, min = 0, max = 100)) #create random numbers
+head(part_df)
+
+# Pivot_longer and pivot_wider (Converts "wide" data into "longer" data, and vice versa). Notice how we have impulse data from two session, maybe we want to collapse across that. Pivot longer is the way to do this.
+part_df.long <- part_df %>% pivot_longer(
+            cols = c(impulse_session1,impulse_session2),
+            names_to = "session", 
+            values_to = "impulse")
+head(part_df.long)
+# Pivot wider can reverse the previous operation or can take 
+head(part_df.long %>% pivot_wider( 
+            names_from = session, 
+            values_from = impulse))
+summary(part_df.long)
+#We can also z score or change character values to factors through mutate. To ensure we only scale the right variables, we can add across(.cols=-c(subject,gender,smoker,session), ~(scale(.) %>% as.vector))). This excludes our factor and character variables but includes all other variables. The . means everything or in this case everything that's left. as.vector keeps the scaled variables makes sure the scaled variables remain vectors and is important to include.
+part_df.z <- part_df.long %>% mutate(across(.cols=-c(subject,gender,smoker,session), ~(scale(.) %>% as.vector))) %>% 
+#Now, lets say that we didn't do stringsAsFactors above and we need to convert a long series of strings into factors. We can use the across function again to say where something is being read as a character or where it is logical make it a factor. 
+mutate(across(where(is_character)|where(is_logical),as_factor))
+summary(part_df.z)
+rm(part_df.z,part_df)
+#
+```
+
+## Simulating data
+We could continue to work with the above data, but once we get to graphs, such a small quantity of data is going to look weird. R has some some great preloaded data frames for practicing. But I think you should bite the bullet and learn to simulate your own random data. It becomes increasing useful as time goes on and most help forums involve simulated data sets so it will help with reading stackoverflow. We're also going to use tibbles instead of data.frames which for our purposes is just semantics, but it's showing up more and more so it's good to know it's pretty much the same thing.
+
+```{r simulated data frames, message=FALSE}
+set.seed(1234)#so we all get the same numbers...theoretically.
+#We'll simulate data for 120 subjects at two time points. 
+#seq builds from 1:120 creating our subject 
+#sample takes a set of numbers or factors and randomly selects one of the set for the number of times in size. replace determines whether or not you're sampling with replacement.
+#rnorm creates a normal distribution around a mean.
+
+part_df.long <- tibble(participant_id=seq(1:120),exercise=as.factor(sample(c("yes","no"),replace=TRUE,size=120)),age=round(runif(120,min=18, max = 100))) %>%
+#In order to get two time points, we need to duplicate every row in this set to get two entries per participant. Slice does that nicely if written in this format. Check out ?slice to learn more
+  slice(rep(1:n(), each = 2)) %>%
+#When we sliced the data it created a frame that was sorted by subject number, so we can just put Session 1 and 2 in every other row. I'm doing this by detecting if the row is even or odd. this also gives us a chance to look at the ifelse function. It's structured as follows if x then y else z ifelse(x is true,then y, else z). %% is for modulo and I use it most often just to determine if something is odd or even. See the bottom for more.
+  mutate(session=as.factor(ifelse(row_number()%%2==0,"Session 1","Session 2")))
+#check to see if each participant number is duplicated with the same exercise, smoking value, age, but different session.
+head(part_df.long)
+#check to see if there are appropriate numbers for each column
+summary(part_df.long)
+#Now we need the outcome values. 
+part_df.long <- part_df.long %>% mutate(smoker=(sample(c(1,0),replace=TRUE,size=240)))
+#And then we check it to make sure it looks ok.
+part_df.long %>% group_by(session) %>% summarise(mean(smoker),sd(smoker))
+#
+```
+## ggplot and descriptive statistics
+
+I always run the plots before looking at the models but you have to do some extra steps to build a graph when you have a binary outcome variable. 
+
+
+
+
+
+```{r graphs, message=FALSE}
+#If we just try to run ggplot with likelihood of smoking as the outcome and do a scatter plot, we're not going to get anything of any use and we can't even look at a line (notice that I used glm and not lm for the line. This is a logistic line.)
+cat("Check out this useless graph:\n")
+part_df.long %>% ggplot(aes(session,smoker,color=exercise)) + geom_point() + geom_smooth(method="glm")
+
+#Instead we need a bar graph. But the bar graph also isn't much use because it's only going to give us a count. 
+cat("Here is another useless graph:\n")
+part_df.long %>% ggplot(aes(session,smoker,fill=exercise)) + geom_bar(stat="identity")
+
+#Before we can graph a categorical variable like this, we're going to need to get a data frame with its means and standard errors
+cat("This graph is better because now we've given ggplot the means we want to graph:\n")
+part_df.long %>% group_by(exercise,session) %>% summarise(mean = mean(smoker),se = std.error(smoker)) %>%
+          ggplot(aes(session,mean,fill=exercise)) + geom_bar(stat="identity", position="dodge") +
+          geom_errorbar(aes(min=mean-se,max=mean+se),width=.2,position=position_dodge(.9)) +
+          theme_bw()+
+          scale_fill_manual(values=c("#000000","grey"))+
+          labs(title = "Smoking Likelihood based on Exercise and Time")+
+          ylab(label="Mean Smoking Likelihood")
+
+```
+
+## Running and saving a model
+
+I know you've already run models, but as your models get more complicated, they'll take longer and longer to run. I've had models take 72 hours or more to finish. You don't want to have to run that model twice! Thankfully, you can save models. *Note* glm is for logistic regression and requires defining a family.
+
+```{r running and SAVING a model}
+#model comes frome lme4 and the p values lmerTest
+simpleModel <- glm(smoker~session*exercise+age,data=part_df.long,family=binomial)
+summary(simpleModel)
+#Save the model
+readr::write_rds(simpleModel,"simpleModel.rds")
+#make a note about dply select
+#remove it
+rm(simpleModel)
+#Loading the model back in
+simpleModel <- readr::read_rds("simpleModel.rds")
+#This summary matches the previous one
+summary(simpleModel)
+#
+```
+
+
+## Advanced ggplot
+For fun, here's how to combine multiple graphs with many. You simple pivot_long or gather the data and then use facets on the variable names columns.
+
+ggpairs is also nice for exploring data and seeing how variables fit together. I admit, it looks pretty weird on the data we simulated but you can see the range of use cases too.
+```{r graphing multiple variables}
+#I'm using gather here instead of pivot_longer. Pivot_longer is newer and can be swapped for gather here.
+#here we get histogram counts
+part_df.long %>% 
+  tidyr::gather(key = "key", value = "value", -participant_id) %>% #Takes all columns except id columns and pivots longer with their appropriate value. It can be useful to set up code this way when there's more you want included than excluded.
+  ggplot(mapping = aes(x = value)) +
+  geom_histogram(stat="count") +
+  facet_wrap(~key, scales = "free") + #Key is the variable name
+  theme_bw() +
+  theme(axis.text.y = element_blank())
+
+#You can look at variables in pairs with GGally (these are easier to make sense of with more continuous varaibles where you'll get a correlation reading)
+GGally::ggpairs(part_df.long,
+                columns = 2:3)
+
+GGally::ggpairs(part_df.long,
+                columns = 3:5,
+                mapping = aes(color = exercise))
+colnames(part_df.long)
+
+#finally, how to get trend lines for categorical outcomes.
+part_df.long %>% 
+  mutate(y = smoker) %>% 
+  tibble::rowid_to_column() %>% 
+  tidyr::gather(key = "key", value = "value", -rowid, -exercise, -smoker, -session,-y) %>% 
+  ggplot(mapping = aes(x = value, y = y)) +
+  geom_jitter(alpha = 0.2, height = 0.02) +
+  geom_smooth(formula = y ~ x,
+              method = 'glm',
+              method.args = list(family = 'binomial'),
+              mapping = aes(color = exercise)) +
+  facet_grid(session~key, scales = "free_x") +
+  ggthemes::scale_color_calc() +
+  theme_bw() +
+  theme(legend.position = "top")
+```
+
+## Common Symbols and what they mean
+
+== evaluate (logical expression)
+%in% check if x is in a list 
+
+&&, ||, xor speed up & and | checks. 
+  For example:
+    
+  In the first case, both a == 4 and a == 5 are evaluated. That's a waste of time. We know it's false when a == 4 is false. In the second case, it stops at the first instance of false and so a == 5 is never evaluated.
+  || is similar:
+    a == 3 || a == 4 only evaluates a == 3 and then stops without needing to evaluate a == 4.
+  
+  xor is a little trickier. We're going to use this in a case where there are two vectors.
+  a = 
+  b = 4
+
+```{r evaluatiing variables}
+x = 5
+cat('x = ', x,'\n')
+cat('does x = 5?',x == 5,'\n')
+cat('does x = 7?', x == 7,'\n\n')
+cat('is x in the list of #s 1,2,3,4?',x %in% c(1,2,3,4),'\n')
+cat('is it in 1,2,3,4,5?', x %in% c(1,2,3,4,5),'\n\n')
+
+cat('does x equal both 3 and 4?', x == 3 & x == 4, ' x == 3 & x == 4 evaluates both whether or not x equals 3 and if it equals 4 which is a waste of time because when x equals 3 fails, we know the response should be false','\n\n')
+cat('does x equal both 3 and 4?', x == 3 && x == 4, 'In x == 3 & x == 4 only x == 3 is evaluated. Because it failed, the evaluation stops','\n\n\n')
+cat('does x equal 5 or 4?', x == 5 | x == 4, ' x == 5 | x == 4 again wastes time because we could stop when x == 5 is true','\n\n') 
+cat('does x equal 5 or 4?', x == 5 || x == 4, 'x == 5 || x == 4 stops on the first true statment','\n\n\n')
+
+b <- c(1,1,2)
+c <- c(3,2,4)
+cat('b =', b,'\n')
+cat('c =', c,'\n\n')
+cat(b == 1 | c == 2, ' with vectors b and c, b == 1 | c == returns a value for every item either is true','\n\n') 
+cat(xor(b==1,c==2), ' xor(b==1, c==2) finds cases where only b or c is true but not both')
+```
+
+
+
+
+```{r matrix multiplication and modulo}
+a = 3
+#to matrix multiply: %*%
+x <- matrix(data=c(1,2,3,4), byrow=TRUE,nrow = 2, ncol = 2 )
+y <- matrix(data=c(1,2,3,4), byrow=FALSE,nrow = 2, ncol = 2 )
+cat('matrix x = \n')
+x
+cat('\nmatrix y = \n')
+y
+z <- x %*% y
+cat('\nmatrix x %*% y = \n')
+z
+#to get modulo (returns remainder and is especially useful detecting even versus odd numbers): %%
+cat('\n z%%a are modulo \n')
+z %% a
+```
+
+  
+```{r get help, cite, and others}
+#?pivot_wider() #get help
+citation("dplyr")
+sample(1:100,1, replace=TRUE) #get 1 number from within 1 to 100
+round(rnorm(4, mean = 50, sd=10)) #get 4 round numbers from a normal distrubution
+hist(round(rnorm(100, mean = 50, sd=10))) #get 100 numbers from a normal distrubution and put them in a histogram
+
+```
+
+```{r building a function}
+
+#Create a dataframe with some limited strings so that we get same palindromes
+text_df <- data.frame(itemnum = 1:2000, word = stringi::stri_rand_strings(2000, round(runif(10,min=2,max=5)),pattern="[A-K]"))
+
+```
+
+```{r building a function}
+ispalindrome <- function(x){
+  #check to see if the string in one column is the same as its reverse
+  x==stri_reverse(x)
+}
+# Create a new column that gives true of false for whether or not the string is a palindrome
+text_df <- text_df %>% mutate(palindrome= ispalindrome(text_df$word))
+```
+
+```{r is even}
+df <- data.frame(x = rep(c("gp1","gp2"),each=100), y = round(runif(200,min=0,max=1)), pid=seq(from=1, to =200),a = rbinom(200,1,.5))
+
+is.even <- function(num){
+  num%%2 #return true for even num and false for odd
+}
+
+df <- df %>% mutate(z = is.even(pid))
+
+df %>% group_by(x,z) %>% summarise(m=mean(y),se=std.error(y)) %>% ggplot(aes(x,m,fill=as.factor(z))) + geom_bar(stat="identity", position = "dodge") + geom_errorbar(aes(ymin=m-se,ymax=m+se),position = position_dodge(.9),width=.3)
+```
+
